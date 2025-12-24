@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>手势控制粒子圣诞树</title>
+    <title>手势控制粒子</title>
     <!-- 引入 MediaPipe Hands 和 Camera Utils -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
@@ -59,6 +59,36 @@
         border-radius: 8px;
         pointer-events: none;
         user-select: none;
+        z-index: 100;
+      }
+
+      /* 上传按钮样式 */
+      #upload-container {
+        position: absolute;
+        top: 20px;
+        left: 200px; /* 放在 info-panel 右边 */
+        z-index: 100;
+      }
+
+      #file-input {
+        display: none;
+      }
+
+      .upload-btn {
+        background: rgba(0, 255, 136, 0.2);
+        border: 1px solid #00ff88;
+        color: #00ff88;
+        padding: 8px 16px;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 14px;
+        transition: all 0.3s;
+        backdrop-filter: blur(5px);
+      }
+
+      .upload-btn:hover {
+        background: rgba(0, 255, 136, 0.4);
+        box-shadow: 0 0 15px rgba(0, 255, 136, 0.5);
       }
 
       /* 右下角手势检测板块 */
@@ -102,7 +132,13 @@
       <div id="info-panel">
         <div>当前状态: <span id="current-state" style="color: yellow">等待手势...</span></div>
         <div style="font-size: 0.8em; margin-top: 5px">张开手掌 -> 打散粒子</div>
-        <div style="font-size: 0.8em">握紧拳头 -> 聚合成树</div>
+        <div style="font-size: 0.8em">握紧拳头 -> 聚合</div>
+      </div>
+
+      <!-- 上传图片按钮 -->
+      <div id="upload-container">
+        <label for="file-input" class="upload-btn">📁 上传图片生成粒子</label>
+        <input type="file" id="file-input" accept="image/*" />
       </div>
 
       <!-- 右下角手势检测反馈 -->
@@ -126,7 +162,7 @@
       // ==========================================
 
       const CONFIG = {
-        particleCount: 3000, // 降低粒子数量以优化性能
+        particleCount: 30000, // 再次翻倍粒子数量，追求极致清晰度
         colors: [
           '#081c15',
           '#1b4332',
@@ -182,6 +218,7 @@
           // 属性
           this.baseSize = Math.random() * 1.5 + 0.3
           this.color = CONFIG.colors[Math.floor(Math.random() * CONFIG.colors.length)]
+          this.originalColor = this.color // 记住初始颜色（树的颜色）
           this.blinkOffset = Math.random() * 100
           this.blinkSpeed = Math.random() * 0.05 + 0.01
           this.isDecoration = Math.random() < 0.15
@@ -275,15 +312,24 @@
             // 只有装饰灯才使用高亮色
           } else {
             // 普通树叶：流光效果 (从下往上扫描的光波)
-            const time = Date.now() * 0.002
-            const wave = Math.sin(this.y * 0.01 - time)
-            // 如果处于光波中，变亮
-            if (wave > 0.8) {
-              ctx.fillStyle = '#b7e4c7' // 高亮绿
-              alpha = 1
+            // 注意：仅当不是图片模式时才启用流光，否则会干扰图片颜色
+            // 简单判断：如果颜色是 rgb() 格式（图片模式），就不加流光
+            if (!this.color.startsWith('rgb')) {
+              const time = Date.now() * 0.002
+              const wave = Math.sin(this.y * 0.01 - time)
+              // 如果处于光波中，变亮
+              if (wave > 0.8) {
+                ctx.fillStyle = '#b7e4c7' // 高亮绿
+                alpha = 1
+              } else {
+                ctx.fillStyle = this.color
+                alpha = 0.8
+              }
             } else {
+              // 图片模式：直接用原色
               ctx.fillStyle = this.color
-              alpha = 0.8
+              // 图片模式下，alpha 设为 1，保持颜色鲜艳
+              alpha = 1
             }
           }
 
@@ -299,9 +345,16 @@
               ctx.fill()
               ctx.globalAlpha = alpha // 恢复透明度
             }
+          } else {
+            // 再次确保非装饰灯（尤其是图片粒子）被填充颜色
+            if (this.color.startsWith('rgb')) {
+              ctx.fillStyle = this.color
+            }
           }
 
           ctx.beginPath()
+          // 图片模式下，为了让像素更饱满，可以画方形或者稍微大一点的圆
+          // 这里我们保持圆形，但确保没有光晕干扰
           ctx.arc(px, py, size, 0, Math.PI * 2)
           ctx.fill()
         }
@@ -377,6 +430,10 @@
       const gestureCtx = gestureCanvas.getContext('2d')
       const gestureStatusEl = document.getElementById('gesture-status')
 
+      // 上传相关
+      const fileInput = document.getElementById('file-input')
+      let isImageMode = false // 当前是否为图片模式
+
       let width, height
       let particles = []
       let snowParticles = []
@@ -393,73 +450,167 @@
         height = window.innerHeight
         canvas.width = width
         canvas.height = height
-        calculateTreeShape()
+
+        if (isImageMode) {
+          // 如果当前是图片模式，重新处理图片（为了适配新屏幕尺寸）
+          // 这里简化处理：直接切回默认模式
+          isImageMode = false
+          calculateDefaultShape()
+        } else {
+          calculateDefaultShape()
+        }
+
         initSnow()
       }
 
       /**
-       * 计算圣诞树形状 (3D 分层随机分布)
+       * 处理上传图片
        */
-      function calculateTreeShape() {
-        const treeHeight = height * CONFIG.treeHeightRatio
-        const maxRadius = Math.min(width * 0.4, 300) // 限制最大宽度
-        const treeYOffset = height * 0.15 // 向上偏移 15% 的屏幕高度
+      fileInput.addEventListener('change', function (e) {
+        const file = e.target.files[0]
+        if (!file) return
 
-        particles.forEach((p, i) => {
-          // 1. 树干逻辑 (固定分配 12% 的粒子给树干，保证密度)
-          if (i < particles.length * 0.12) {
-            const trunkR = maxRadius * 0.1 * Math.random() // 树干稍细一点
-            const angle = Math.random() * Math.PI * 2
-            const x = Math.cos(angle) * trunkR
-            const z = Math.sin(angle) * trunkR
-
-            // 树干 Y 轴范围：从树冠内部延伸出来
-            // 树冠底部约为 treeHeight * 0.5
-            // 我们让树干从 treeHeight * 0.35 (插入树冠) 到 treeHeight * 0.75 (向下延伸)
-            const yMin = treeHeight * 0.35
-            const yMax = treeHeight * 0.75
-            const y = yMin + Math.random() * (yMax - yMin) - treeYOffset
-
-            p.setTarget(x, y, z)
-            p.color = '#5c4033' // 深一点的木头色
-            p.isDecoration = false
-            p.baseSize = Math.random() * 2 + 1 // 树干粒子稍微扎实一点
-            return
+        const reader = new FileReader()
+        reader.onload = function (event) {
+          const img = new Image()
+          img.onload = function () {
+            processImageToParticles(img)
           }
+          img.src = event.target.result
+        }
+        reader.readAsDataURL(file)
+      })
 
-          // 2. 树冠主体
-          // 随机高度 t: 0(顶) -> 1(底)
-          let t = Math.random()
-          // 使用 pow 让粒子更倾向于分布在底部
-          t = Math.pow(t, 0.8)
+      /**
+       * 将图片转换为粒子目标点
+       */
+      function processImageToParticles(img) {
+        isImageMode = true
 
-          // 圆锥半径随高度变化
-          const currentMaxR = t * maxRadius
-          // 在截面圆内随机分布
-          const r = currentMaxR * Math.sqrt(Math.random())
-          const angle = Math.random() * Math.PI * 2
+        // 1. 创建离屏 Canvas 获取像素数据
+        const offCanvas = document.createElement('canvas')
+        const offCtx = offCanvas.getContext('2d')
 
-          let x = Math.cos(angle) * r
-          let z = Math.sin(angle) * r
-          let y = -treeHeight * 0.5 + t * treeHeight - treeYOffset
+        // 计算缩放比例，让图片适应屏幕，但不要太大
+        // 目标是让图片占据屏幕约 60% - 80% 的区域
+        const screenRatio = width / height
+        const imgRatio = img.width / img.height
 
-          // 装饰球逻辑 (放在树的表面)
-          if (Math.random() < 0.08) {
-            const surfaceR = currentMaxR * (0.9 + Math.random() * 0.1) // 表面附近
-            x = Math.cos(angle) * surfaceR
-            z = Math.sin(angle) * surfaceR
+        let drawW, drawH
+        if (imgRatio > screenRatio) {
+          drawW = Math.floor(width * 0.6)
+          drawH = Math.floor(drawW / imgRatio)
+        } else {
+          drawH = Math.floor(height * 0.6)
+          drawW = Math.floor(drawH * imgRatio)
+        }
 
+        offCanvas.width = drawW
+        offCanvas.height = drawH
+
+        // 绘制图片
+        offCtx.drawImage(img, 0, 0, drawW, drawH)
+        const imgData = offCtx.getImageData(0, 0, drawW, drawH)
+        const data = imgData.data
+        const dataWidth = imgData.width // 必须使用真实的整数宽度作为 stride
+
+        // 2. 采样像素点
+        const totalPixels = drawW * drawH
+        // 我们希望采样出大约 CONFIG.particleCount 个点
+        // step 是步长
+        const step = Math.ceil(Math.sqrt(totalPixels / CONFIG.particleCount))
+
+        let particleIndex = 0
+
+        // 偏移量，让图片居中
+        const offsetX = (width - drawW) / 2
+        const offsetY = (height - drawH) / 2 - height * 0.05 // 稍微靠上一点
+
+        for (let y = 0; y < drawH; y += step) {
+          for (let x = 0; x < drawW; x += step) {
+            // 获取像素索引
+            // 关键修复：使用整数宽度 dataWidth 计算索引，防止错位
+            const index = (y * dataWidth + x) * 4
+
+            const r = data[index]
+            const g = data[index + 1]
+            const b = data[index + 2]
+            const a = data[index + 3]
+
+            // 忽略透明像素和过暗的像素（可选）
+            if (a < 128) continue
+
+            if (particleIndex < particles.length) {
+              const p = particles[particleIndex]
+
+              // 设置目标位置 (图片是 2D 的，Z 设为 0)
+              const targetX = x - drawW / 2
+              const targetY = y - drawH / 2
+              const targetZ = 0
+
+              p.setTarget(targetX, targetY, targetZ)
+
+              // 设置颜色
+              p.color = `rgb(${r},${g},${b})`
+              p.isDecoration = false
+
+              // 关键修复：根据步长动态调整粒子大小，使其能填满画面
+              // step 是采样步长
+              // 粒子数量翻倍后，step 会变得非常小
+              // 设置为 1.05 保证紧密排列且几乎无重叠，获得最锐利的像素感
+              p.baseSize = step * 1.05
+
+              particleIndex++
+            }
+          }
+        }
+
+        // 3. 处理多余的粒子
+        // 如果图片采样点少于粒子总数，剩下的粒子让它们隐藏或飞到无穷远，或者组成一个边框
+        // 这里我们让它们随机分布在背景里，变暗
+        for (let i = particleIndex; i < particles.length; i++) {
+          const p = particles[i]
+          // 让多余粒子变成背景星空
+          p.setTarget((Math.random() - 0.5) * width * 2, (Math.random() - 0.5) * height * 2, (Math.random() - 0.5) * 1000)
+          p.color = 'rgba(255,255,255,0.1)'
+          p.isDecoration = false
+        }
+
+        // 提示
+        stateTextEl.innerText = '图片已加载 (握拳查看)'
+      }
+
+      /**
+       * 计算默认形状 (球体)
+       * 取代原来的圣诞树
+       */
+      function calculateDefaultShape() {
+        const radius = Math.min(width, height) * 0.35
+
+        particles.forEach((p) => {
+          // 球面随机分布 (Marsaglia method 或 简单的极坐标)
+          // 为了均匀分布，使用 phi = acos(2v-1)
+          const theta = Math.random() * Math.PI * 2
+          const phi = Math.acos(Math.random() * 2 - 1)
+
+          const x = radius * Math.sin(phi) * Math.cos(theta)
+          const y = radius * Math.sin(phi) * Math.sin(theta)
+          const z = radius * Math.cos(phi)
+
+          p.setTarget(x, y, z)
+
+          // 随机颜色
+          p.color = CONFIG.colors[Math.floor(Math.random() * CONFIG.colors.length)]
+          p.originalColor = p.color
+
+          // 少量装饰点
+          if (Math.random() < 0.1) {
             p.isDecoration = true
-            p.color = CONFIG.colors[Math.floor(Math.random() * 4) + 7] // 取后几个亮色
             p.baseSize = Math.random() * 2 + 1.5
           } else {
             p.isDecoration = false
-            // 树叶颜色
-            const greenIndex = Math.floor(t * 6)
-            p.color = CONFIG.colors[Math.min(greenIndex, 6)]
+            p.baseSize = Math.random() * 1.5 + 0.3
           }
-
-          p.setTarget(x, y, z)
         })
       }
 
@@ -481,7 +632,7 @@
         for (let i = 0; i < CONFIG.particleCount; i++) {
           particles.push(new Particle(width, height))
         }
-        calculateTreeShape()
+        calculateDefaultShape()
         initSnow()
       }
 
@@ -500,15 +651,24 @@
           p.draw(ctx)
         })
 
-        // 启用发光混合模式 (仅对树粒子)
-        ctx.globalCompositeOperation = 'lighter'
+        // 混合模式控制：
+        // 默认模式（球体）：使用 'lighter' 让粒子重叠发光
+        // 图片模式：使用 'source-over' 正常覆盖，确保颜色还原准确
+        if (isImageMode) {
+          ctx.globalCompositeOperation = 'source-over'
+        } else {
+          ctx.globalCompositeOperation = 'lighter'
+        }
 
         const centerX = width / 2
         const centerY = height / 2
 
         // 更新旋转角度
-        if (isAssembling) {
+        if (isAssembling && !isImageMode) {
           treeRotation += CONFIG.rotationSpeed
+        } else if (isImageMode) {
+          // 图片模式下，为了看清图片，让旋转归零或者缓慢复位
+          treeRotation = treeRotation * 0.95
         }
 
         particles.forEach((p) => {
